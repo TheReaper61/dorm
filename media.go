@@ -8,6 +8,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"io/ioutil"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -15,7 +16,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/rightjoin/fig"
+	"github.com/go-resty/resty/v2"
 )
 
 type Media struct {
@@ -79,6 +82,38 @@ func NewMedia(f multipart.File, fh *multipart.FileHeader, entity, field string, 
 		}
 	}
 
+	if strings.HasPrefix(md.Mime, "video/") {
+
+		// Write to temp directory and pass the path to video-svc
+		tempPath, err := md.DiskWriteTempDir(buf.Bytes())
+		if err != nil {
+			return nil, fmt.Errorf("Writing video to temp directory failed: %v", err)
+		}
+
+		apiRes := map[string]interface{}{}
+
+		host := fig.String("svc.video.host")
+		endpoint := fig.String("svc.video.api.resolution")
+
+		resp, err := resty.New().SetDebug(true).R().SetQueryParam("path", *tempPath).SetResult(&apiRes).SetError(&apiRes).Get(fmt.Sprintf("%s%s", host, endpoint))
+		if err != nil {
+			return nil, errors.Wrap(err, "Error validating video")
+		}
+
+		if !resp.IsSuccess() {
+			return nil, fmt.Errorf(resp.String())
+		}
+
+		videoRes := apiRes
+
+		intW := int(videoRes["width"].(float64))
+		intH := int(videoRes["height"].(float64))
+
+		md.Height = &intH
+		md.Width = &intW
+
+	}
+
 	// Validation for size & dimensions
 	if err := md.ValidateSize(); err != nil {
 		return nil, err
@@ -117,6 +152,23 @@ func NewMedia(f multipart.File, fh *multipart.FileHeader, entity, field string, 
 	}
 
 	return &md, nil
+}
+
+func (f Media) DiskWriteTempDir(raw []byte) (*string, error) {
+
+	tempFile, err := ioutil.TempFile("", "video")
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := tempFile.Write(raw); err != nil {
+		return nil, err
+	}
+
+	filePath := tempFile.Name()
+
+	return &filePath, nil
+
 }
 
 func (f Media) BeforeCommit() error {
