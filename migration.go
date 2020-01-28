@@ -27,7 +27,7 @@ type SQLMigrationTask struct {
 
 	// Set it to 1, incase you need to run the sql from the same file again.
 	// Reduces the need for creating/renaming a file incase of any syntactical errors.
-	ReRun uint `sql:"tinyint(1);unsigned;DEFAULT:0" json:"re_run"`
+	ReRun *uint `sql:"tinyint(1);unsigned;DEFAULT:0" json:"re_run"`
 
 	Remarks string `sql:"varchar(256)" json:"remarks"`
 
@@ -130,9 +130,11 @@ func RunMigration() {
 			"IP":         rip.GetLocal(),
 		}
 
+		pUint := uint(0)
+
 		s := SQLMigrationTask{
 			Filename: file,
-			ReRun:    0,
+			ReRun:    &pUint,
 			WhosThat: WhosThat{Who: NewJDoc2(who)},
 			Timed4: Timed4{
 				CreatedAt: time.Now(),
@@ -145,7 +147,7 @@ func RunMigration() {
 			s.Remarks = err.Error()
 		}
 
-		err = db.Where("filename = ?", file).FirstOrCreate(&s).Assign(SQLMigrationTask{ReRun: 0, Timed4: Timed4{UpdatedAt: time.Now()}, Remarks: s.Remarks, WhosThat: s.WhosThat}).Error
+		err = db.Where("filename = ?", file).Assign(SQLMigrationTask{ReRun: &pUint, Timed4: Timed4{UpdatedAt: time.Now()}, Remarks: s.Remarks, WhosThat: s.WhosThat}).FirstOrCreate(&s).Error
 		if err != nil {
 			log.Info(sqlMigrationRLogMessage, "File", path, "Update Status Failed", err)
 		}
@@ -185,7 +187,7 @@ func getFilesToExecute(files []string) ([]string, error) {
 
 	for _, val := range executedTasks {
 		aleadyRunMap[val.Filename] = true
-		if val.ReRun == 1 {
+		if *val.ReRun == 1 {
 			reRun[val.Filename] = true
 		}
 	}
