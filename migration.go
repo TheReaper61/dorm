@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,32 +43,9 @@ const (
 // inside the directory mentioned in the config under the key
 // sql-migration:
 //		dir: # defaults to ./migration
-func RunMigration() {
+func RunMigration(filesToRun []string) {
 
-	dir := fig.StringOr("./migration", "sql-migration.dir")
-	fInfo := make([]os.FileInfo, 0)
-
-	// Collect all the files present inside the migration directory
-	err := filepath.Walk(dir, visit(&fInfo))
-	if err != nil {
-		return
-	}
-	if len(fInfo) == 0 {
-		log.Info(sqlMigrationRLogMessage, "NO sql files found under dir ", dir)
-		return
-	}
-
-	// sort @modified date
-	sort.Slice(fInfo, func(i, j int) bool {
-		return fInfo[i].ModTime().Before(fInfo[j].ModTime())
-	})
-
-	files := make([]string, len(fInfo))
-	for i, val := range fInfo {
-		files[i] = val.Name()
-	}
-
-	filesToExecute, err := getFilesToExecute(files)
+	filesToExecute, err := getFilesToExecute(filesToRun)
 	if err != nil {
 		log.Error(sqlMigrationRLogMessage, "Error", err)
 		return
@@ -84,10 +60,11 @@ func RunMigration() {
 		return strconv.Itoa(rand.Intn(max-min) + min)
 	}
 
+	dir := fig.StringOr("./migration", "sql_migration.dir")
+
 	db := GetORM(true)
 	for _, file := range filesToExecute {
 
-		code := otp(1000, 10000)
 		path := fmt.Sprintf("%s/%s", dir, file)
 		data, err := ioutil.ReadFile(path)
 		if err != nil {
@@ -95,61 +72,68 @@ func RunMigration() {
 			continue
 		}
 
-		query := string(data)
-		skipFile := false
+		content := string(data)
 
-		log.Info(sqlMigrationRLogMessage, "file-name", file, "query", query)
-		if strings.Contains(strings.ToLower(query), "delete") {
+		// The file can have multiple queries separated by "-------", split
+		// and execute them individually.
+		queries := strings.Split(content, "------")
 
-			fmt.Println("Restricted keyword DELETE found in file: " + file)
+		for _, query := range queries {
+			skipFile := false
 
-			reader := bufio.NewReader(os.Stdin)
-			fmt.Println("Are you sure you want to continue ?? ( Type:", code, ")")
-			input, _ := reader.ReadString('\n')
+			log.Info(sqlMigrationRLogMessage, "file-name", file, "query", query)
+			if strings.Contains(strings.ToLower(query), "delete") {
+				code := otp(1000, 10000)
+				fmt.Println("Restricted keyword DELETE found in file: " + file)
 
-			if strings.TrimSpace(input) != code {
-				fmt.Println("Incorrect entry. Ignoring file " + file)
+				reader := bufio.NewReader(os.Stdin)
+				fmt.Println("Are you sure you want to continue ?? ( Type:", code, ")")
+				input, _ := reader.ReadString('\n')
 
-				skipFile = true
-				err = errors.Errorf("skipping file %s, contains restricted keyword DELETE", file)
+				if strings.TrimSpace(input) != code {
+					fmt.Println("Incorrect entry. Ignoring file " + file)
+
+					skipFile = true
+					err = errors.Errorf("skipping file %s, contains restricted keyword DELETE", file)
+				}
 			}
-		}
 
-		if !skipFile {
-			err = db.Exec(query).Error
-		}
+			if !skipFile {
+				err = db.Exec(query).Error
+			}
 
-		if err != nil {
-			log.Info(sqlMigrationRLogMessage, "file-name", file, "status", "Failed", "Error", err)
-		} else {
-			log.Info(sqlMigrationRLogMessage, "file-name", file, "status", "Success")
-		}
+			if err != nil {
+				log.Info(sqlMigrationRLogMessage, "file-name", file, "status", "Failed", "Error", err)
+			} else {
+				log.Info(sqlMigrationRLogMessage, "file-name", file, "status", "Success")
+			}
 
-		who := map[string]interface{}{
-			"MacAddress": macUint64(),
-			"IP":         rip.GetLocal(),
-		}
+			who := map[string]interface{}{
+				"MacAddress": macUint64(),
+				"IP":         rip.GetLocal(),
+			}
 
-		pUint := uint(0)
+			pUint := uint(0)
 
-		s := SQLMigrationTask{
-			Filename: file,
-			ReRun:    &pUint,
-			WhosThat: WhosThat{Who: NewJDoc2(who)},
-			Timed4: Timed4{
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			},
-			Remarks: "Success",
-		}
+			s := SQLMigrationTask{
+				Filename: file,
+				ReRun:    &pUint,
+				WhosThat: WhosThat{Who: NewJDoc2(who)},
+				Timed4: Timed4{
+					CreatedAt: time.Now(),
+					UpdatedAt: time.Now(),
+				},
+				Remarks: "Success",
+			}
 
-		if err != nil {
-			s.Remarks = err.Error()
-		}
+			if err != nil {
+				s.Remarks = err.Error()
+			}
 
-		err = db.Where("filename = ?", file).Assign(SQLMigrationTask{ReRun: &pUint, Timed4: Timed4{UpdatedAt: time.Now()}, Remarks: s.Remarks, WhosThat: s.WhosThat}).FirstOrCreate(&s).Error
-		if err != nil {
-			log.Info(sqlMigrationRLogMessage, "File", path, "Update Status Failed", err)
+			err = db.Where("filename = ?", file).Assign(SQLMigrationTask{ReRun: &pUint, Timed4: Timed4{UpdatedAt: time.Now()}, Remarks: s.Remarks, WhosThat: s.WhosThat}).FirstOrCreate(&s).Error
+			if err != nil {
+				log.Info(sqlMigrationRLogMessage, "File", path, "Update Status Failed", err)
+			}
 		}
 	}
 
